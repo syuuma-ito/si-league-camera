@@ -1,0 +1,37 @@
+hls: no
+rtmp: no
+srt: no
+
+# テスト用に、同じカメラの映像を複数のパスで配信する設定
+
+paths:
+    cam1-main:
+        source: rtsp://192.168.10.200/live/av0
+    cam2-main:
+        source: rtsp://192.168.10.200/live/av0
+    cam3-main:
+        source: rtsp://192.168.10.200/live/av0
+    cam4-main:
+        source: rtsp://192.168.10.200/live/av0
+    cam5-main:
+        source: rtsp://192.168.10.200/live/av0
+    cam6-main:
+        source: rtsp://192.168.10.200/live/av0
+    cam7-main:
+        source: rtsp://192.168.10.200/live/av0
+    cam8-main:
+        source: rtsp://192.168.10.200/live/av0
+    # cam9-main:
+    #     source: rtsp://192.168.10.200/live/av0
+    # cam10-main:
+    #     source: rtsp://192.168.10.200/live/av0
+    # cam11-main:
+    #     source: rtsp://192.168.10.200/live/av0
+    # cam12-main:
+    #     source: rtsp://192.168.10.200/live/av0
+    # cam13-main:
+    #     source: rtsp://192.168.10.200/live/av0
+    # cam14-main:
+    #     source: rtsp://192.168.10.200/live/av0
+    # cam15-main:
+    #     source: rtsp://192.168.10.200/live/av0
