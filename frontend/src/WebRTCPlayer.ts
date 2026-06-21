@@ -1,27 +1,37 @@
-export type ConnectionStatus = "connecting" | "connected" | "disconnected" | "retrying";
+export type ConnectionStatus = "connecting" | "connected" | "disconnected";
 
-export class WHEPPlayer {
+export class WebRTCPlayer {
     private videoEl: HTMLVideoElement;
     private streamPath: string;
     private whepUrl: string;
     private pc: RTCPeerConnection | null = null;
     private reconnectTimer: number | null = null;
+    private sessionUrl: string | null = null;
     private isConnecting = false;
     private stopped = false;
+    private debugEnabled = import.meta.env.DEV || import.meta.env.VITE_WEBRTC_DEBUG === "true";
 
     onStatusChange: ((status: ConnectionStatus) => void) | null = null;
 
     private static readonly RETRY_DELAY_MS = 2000;
     private static readonly ICE_GATHER_TIMEOUT_MS = 3000;
 
-    constructor(videoEl: HTMLVideoElement, streamPath: string, mediaServer: string) {
+    constructor(videoEl: HTMLVideoElement, mediaServer: string, streamPath: string) {
         this.videoEl = videoEl;
         this.streamPath = streamPath;
-        this.whepUrl = `http://${mediaServer}/${streamPath}/whep`;
+        this.whepUrl = this.buildWhepUrl(mediaServer, streamPath);
     }
 
     private log(message: string, type = "info") {
-        console.log(`[WHEP:${this.streamPath}] [${type}] ${message}`);
+        if (this.debugEnabled) {
+            console.debug(`[WebRTC: ${this.streamPath}] [${type}] ${message}`);
+        }
+    }
+
+    private buildWhepUrl(mediaServer: string, streamPath: string) {
+        // ホストだけ指定された場合でもURLとして扱えるよう、現在ページのprotocolを補う。
+        const baseUrl = mediaServer.startsWith("http://") || mediaServer.startsWith("https://") ? mediaServer : `${window.location.protocol}//${mediaServer}`;
+        return new URL(`${streamPath}/whep`, `${baseUrl.replace(/\/$/, "")}/`).toString();
     }
 
     async start() {
@@ -33,9 +43,7 @@ export class WHEPPlayer {
         this.log("Connecting to stream...", "status");
 
         try {
-            this.pc = new RTCPeerConnection({
-                iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-            });
+            this.pc = new RTCPeerConnection({ iceServers: [] });
 
             // WebRTC接続状態の監視
             this.pc.onconnectionstatechange = () => {
@@ -72,7 +80,7 @@ export class WHEPPlayer {
             const offer = await this.pc.createOffer();
             await this.pc.setLocalDescription(offer);
 
-            // ICE Candidateの収集完了を待機（タイムアウト付き）
+            // ICE Candidateの収集完了を待機
             await this.waitForIceGathering();
 
             this.log("Sending SDP Offer...", "sdp");
@@ -87,6 +95,9 @@ export class WHEPPlayer {
             if (!response.ok) {
                 throw new Error(`WHEP request failed (${response.status})`);
             }
+            // MediaMTXが返すセッションURLを保持し、停止時に明示的に解放する。
+            const location = response.headers.get("Location");
+            this.sessionUrl = location ? new URL(location, this.whepUrl).toString() : null;
 
             // SDP Answerを適用
             const answerSdp = await response.text();
@@ -103,7 +114,7 @@ export class WHEPPlayer {
         }
     }
 
-    /** ICE候補の収集完了をタイムアウト付きで待機 */
+    // ICE候補の収集完了をタイムアウト付きで待機
     private waitForIceGathering(): Promise<void> {
         return new Promise((resolve) => {
             if (this.pc?.iceGatheringState === "complete") {
@@ -123,27 +134,28 @@ export class WHEPPlayer {
                 this.pc?.removeEventListener("icegatheringstatechange", onStateChange);
                 this.log("ICE gathering timed out, proceeding with available candidates", "warn");
                 resolve();
-            }, WHEPPlayer.ICE_GATHER_TIMEOUT_MS);
+            }, WebRTCPlayer.ICE_GATHER_TIMEOUT_MS);
 
             this.pc?.addEventListener("icegatheringstatechange", onStateChange);
         });
     }
 
-    /** 固定間隔での再接続スケジュール */
+    // 固定間隔での再接続スケジュール
     private scheduleReconnect(reason: string) {
         if (this.reconnectTimer || this.stopped) return;
 
-        this.setStatus("retrying");
-        this.log(`Reconnecting in ${WHEPPlayer.RETRY_DELAY_MS}ms — ${reason}`, "retry");
+        this.setStatus("disconnected");
+        this.log(`Reconnecting in ${WebRTCPlayer.RETRY_DELAY_MS}ms — ${reason}`, "retry");
+        this.closeRemoteSession();
         this.destroyConnection();
 
         this.reconnectTimer = window.setTimeout(() => {
             this.reconnectTimer = null;
             this.start();
-        }, WHEPPlayer.RETRY_DELAY_MS);
+        }, WebRTCPlayer.RETRY_DELAY_MS);
     }
 
-    /** RTCPeerConnectionとメディアソースを破棄 */
+    // RTCPeerConnectionとメディアソースを破棄
     private destroyConnection() {
         if (this.pc) {
             this.pc.onconnectionstatechange = null;
@@ -152,8 +164,18 @@ export class WHEPPlayer {
             this.pc.close();
             this.pc = null;
         }
+        this.sessionUrl = null;
         this.videoEl.srcObject = null;
         this.isConnecting = false;
+    }
+
+    private closeRemoteSession() {
+        // DELETEに失敗しても次の再接続や画面破棄は止めない。
+        const sessionUrl = this.sessionUrl;
+        this.sessionUrl = null;
+        if (sessionUrl) {
+            void fetch(sessionUrl, { method: "DELETE" }).catch(() => undefined);
+        }
     }
 
     private setStatus(status: ConnectionStatus) {
@@ -166,6 +188,7 @@ export class WHEPPlayer {
             clearTimeout(this.reconnectTimer);
             this.reconnectTimer = null;
         }
+        this.closeRemoteSession();
         this.destroyConnection();
         this.setStatus("disconnected");
     }

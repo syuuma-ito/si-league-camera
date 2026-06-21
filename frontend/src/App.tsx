@@ -1,96 +1,110 @@
-import { useEffect, useRef, useState } from "react";
-import "./App.css";
-import type { ConnectionStatus } from "./WHEPPlayer";
-import { WHEPPlayer } from "./WHEPPlayer";
-
-const MEDIA_SERVER = "localhost:8889";
-
-const CAMERAS = [
-    { path: "cam1-main", label: "1" },
-    { path: "cam2-main", label: "2" },
-    { path: "cam3-main", label: "3" },
-    { path: "cam4-main", label: "4" },
-    { path: "cam5-main", label: "5" },
-    { path: "cam6-main", label: "6" },
-    { path: "cam7-main", label: "7" },
-    { path: "cam8-main", label: "8" },
-] as const;
+import { getSnapshot, getWebSocketUrl, parseWebSocketMessage } from "@/api";
+import { MainScreen } from "@/screens/MainScreen";
+import { SettingsScreen } from "@/screens/SettingsScreen";
+import { StreamsScreen } from "@/screens/StreamsScreen";
+import type { ConnectionStatus, Snapshot } from "@/types";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Navigate, Route, Routes } from "react-router-dom";
 
 function App() {
-    const [activeGroup, setActiveGroup] = useState<"A" | "B">("A");
-    const [statuses, setStatuses] = useState<ConnectionStatus[]>(() => CAMERAS.map(() => "disconnected"));
+    const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+    const [frontendStatuses, setFrontendStatuses] = useState<Record<string, ConnectionStatus>>({});
+    const [serverStatus, setServerStatus] = useState<ConnectionStatus>("connecting");
+    const [error, setError] = useState<string | null>(null);
+    const websocketRef = useRef<WebSocket | null>(null);
 
-    // 各ビデオ要素への参照
-    const videoRefs = useRef<(HTMLVideoElement | null)[]>([]);
+    const refresh = useCallback(async () => {
+        // 操作後はHTTPでも取り直し、WebSocket遅延時にも画面を最新化する。
+        const nextSnapshot = await getSnapshot();
+        setSnapshot(nextSnapshot);
+    }, []);
 
-    // 接続インスタンスを保持するref
-    const playersRef = useRef<WHEPPlayer[]>([]);
-
-    const setRefAt = (index: number) => (el: HTMLVideoElement | null) => {
-        videoRefs.current[index] = el;
-    };
-
+    // 初回表示用のスナップショットを取得する
     useEffect(() => {
-        const players = CAMERAS.map((cam, i) => {
-            const videoEl = videoRefs.current[i];
-            if (!videoEl) return null;
+        void getSnapshot()
+            .then((nextSnapshot) => setSnapshot(nextSnapshot))
+            .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+    }, []);
 
-            const player = new WHEPPlayer(videoEl, cam.path, MEDIA_SERVER);
-            player.onStatusChange = (status) => {
-                setStatuses((prev) => {
-                    const next = [...prev];
-                    next[i] = status;
-                    return next;
-                });
+    // 設定変更はWebSocketで受け取り、全画面の状態を同期する
+    useEffect(() => {
+        let isDisposed = false;
+        let reconnectTimer: number | undefined;
+
+        const connect = () => {
+            if (isDisposed) return;
+            setServerStatus("connecting");
+            const websocket = new WebSocket(getWebSocketUrl());
+            websocketRef.current = websocket;
+            websocket.onopen = () => {
+                setServerStatus("connected");
+                setError(null);
             };
-            player.start();
-            return player;
-        }).filter((p): p is WHEPPlayer => p !== null);
+            websocket.onmessage = (event) => {
+                const message = parseWebSocketMessage(String(event.data));
+                if (message?.payload) {
+                    setSnapshot(message.payload);
+                }
+            };
+            websocket.onerror = () => {
+                setError("WebSocketの接続に失敗しました");
+            };
+            websocket.onclose = () => {
+                if (websocketRef.current === websocket) {
+                    websocketRef.current = null;
+                }
+                if (!isDisposed) {
+                    setServerStatus("disconnected");
+                    reconnectTimer = window.setTimeout(connect, 2000);
+                }
+            };
+        };
 
-        playersRef.current = players;
+        connect();
 
         return () => {
-            playersRef.current.forEach((player) => player.stop());
-            playersRef.current = [];
+            isDisposed = true;
+            if (reconnectTimer !== undefined) {
+                window.clearTimeout(reconnectTimer);
+            }
+            websocketRef.current?.close();
+            websocketRef.current = null;
         };
     }, []);
 
-    return (
-        <div className="app-viewport">
-            <div className={`grid-container ${activeGroup === "A" ? "active" : ""}`}>
-                <video ref={setRefAt(0)} autoPlay muted playsInline></video>
-                <video ref={setRefAt(1)} autoPlay muted playsInline></video>
-                <video ref={setRefAt(2)} autoPlay muted playsInline></video>
-                <video ref={setRefAt(3)} autoPlay muted playsInline></video>
-            </div>
+    // フロント側の再生状態だけをローカルに保持する
+    const reportStatus = useCallback((streamId: string, status: ConnectionStatus) => {
+        setFrontendStatuses((prev) => {
+            if (prev[streamId] === status) return prev;
+            return { ...prev, [streamId]: status };
+        });
+    }, []);
 
-            <div className={`grid-container ${activeGroup === "B" ? "active" : ""}`}>
-                <video ref={setRefAt(4)} autoPlay muted playsInline></video>
-                <video ref={setRefAt(5)} autoPlay muted playsInline></video>
-                <video ref={setRefAt(6)} autoPlay muted playsInline></video>
-                <video ref={setRefAt(7)} autoPlay muted playsInline></video>
-            </div>
+    const visibleFrontendStatuses = useMemo(() => {
+        if (!snapshot) return frontendStatuses;
+        // 削除済みストリームの再生状態を表示へ残さない。
+        const streamIds = new Set(snapshot.streams.map((stream) => stream.id));
+        return Object.fromEntries(Object.entries(frontendStatuses).filter(([streamId]) => streamIds.has(streamId)));
+    }, [frontendStatuses, snapshot]);
 
-            <div className="bottom-bar">
-                <div className="button-bar">
-                    <button className={activeGroup === "A" ? "active" : ""} onClick={() => setActiveGroup("A")}>
-                        1-4
-                    </button>
-                    <button className={activeGroup === "B" ? "active" : ""} onClick={() => setActiveGroup("B")}>
-                        5-8
-                    </button>
-                    <div className="status-bar">
-                        {CAMERAS.map((cam, i) => (
-                            <div key={cam.path} className={`status-item status-${statuses[i]}`}>
-                                <span className="status-dot" />
-                                <span className="status-label">{cam.label}</span>
-                            </div>
-                        ))}
-                    </div>
-                </div>
-            </div>
-        </div>
-    );
+    const content = useMemo(() => {
+        if (error && !snapshot) {
+            return <div className="min-h-screen bg-black p-5 text-white">API 接続エラー: {error}</div>;
+        }
+        if (!snapshot) {
+            return <div className="min-h-screen bg-black p-5 text-white">読み込み中</div>;
+        }
+        return (
+            <Routes>
+                <Route path="/" element={<Navigate to="/settings" replace />} />
+                <Route path="/main" element={<MainScreen snapshot={snapshot} frontendStatuses={visibleFrontendStatuses} reportStatus={reportStatus} serverStatus={serverStatus} />} />
+                <Route path="/streams" element={<StreamsScreen snapshot={snapshot} frontendStatuses={visibleFrontendStatuses} reportStatus={reportStatus} serverStatus={serverStatus} />} />
+                <Route path="/settings" element={<SettingsScreen snapshot={snapshot} refresh={refresh} serverStatus={serverStatus} />} />
+            </Routes>
+        );
+    }, [error, refresh, reportStatus, serverStatus, snapshot, visibleFrontendStatuses]);
+
+    return content;
 }
 
 export default App;
