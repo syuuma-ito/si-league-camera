@@ -1,4 +1,4 @@
-import type { Scene, ScenePayload, Snapshot, StreamPayload, SystemState, VideoStream, WebSocketMessage } from "./types";
+import type { FragmentMp4WsMap, Scene, ScenePayload, Snapshot, StreamPayload, SystemState, VideoStream, WebSocketMessage } from "./types";
 
 const pageHost = typeof window === "undefined" ? "localhost" : window.location.hostname;
 const backendHost = pageHost === "localhost" || pageHost === "127.0.0.1" ? "127.0.0.1" : pageHost;
@@ -7,6 +7,7 @@ const backendHost = pageHost === "localhost" || pageHost === "127.0.0.1" ? "127.
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
 export const WS_BASE_URL = import.meta.env.VITE_WS_BASE_URL ?? `ws://${backendHost}:8000`;
 export const MEDIA_SERVER = import.meta.env.VITE_MEDIA_SERVER ?? `${pageHost}:8889`;
+export const FMP4_WS_MAP_URL = import.meta.env.VITE_FMP4_WS_MAP_URL ?? "/fmp4-ws-map.json";
 
 async function request(path: string, options?: RequestInit): Promise<void>;
 async function request<T>(path: string, options?: RequestInit): Promise<T>;
@@ -37,6 +38,25 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T | 
 
 export function getSnapshot(): Promise<Snapshot> {
     return request<Snapshot>("/api/snapshot");
+}
+
+export async function getFragmentMp4WsMap(): Promise<FragmentMp4WsMap> {
+    const response = await fetch(FMP4_WS_MAP_URL);
+    if (!response.ok) {
+        throw new Error(`fMP4 WSマップの読み込みに失敗しました: ${response.status}`);
+    }
+
+    const data: unknown = await response.json();
+    if (data === null || typeof data !== "object" || Array.isArray(data)) {
+        throw new Error("fMP4 WSマップの形式が正しくありません");
+    }
+
+    const entries = Object.entries(data);
+    if (!entries.every(([key, value]) => key.length > 0 && typeof value === "string" && value.length > 0)) {
+        throw new Error("fMP4 WSマップにはMediaMTXパスとWSアドレスの文字列を指定してください");
+    }
+
+    return data as FragmentMp4WsMap;
 }
 
 export function createStream(payload: StreamPayload): Promise<void> {

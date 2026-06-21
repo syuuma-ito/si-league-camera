@@ -8,6 +8,8 @@ export type VideoStream = {
     display_order: number;
 };
 
+export type FragmentMp4WsMap = Record<string, string>;
+
 export type ScenePlacement = {
     stream_id: string;
     position: Position;
